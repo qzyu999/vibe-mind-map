@@ -41,6 +41,19 @@ class Milestone:
     issues: list[Issue] = field(default_factory=list)
 
 
+@dataclass
+class PullRequest:
+    number: int
+    title: str
+    state: str  # OPEN, MERGED, CLOSED
+    url: str
+    head_branch: str
+    additions: int
+    deletions: int
+    changed_files: int
+    closes_issues: list[int] = field(default_factory=list)
+
+
 def fetch_issues(repo: str) -> list[Issue]:
     """Fetch all issues from a GitHub repo using gh CLI."""
     result = subprocess.run(
@@ -82,6 +95,36 @@ def fetch_milestones(repo: str) -> list[Milestone]:
             closed_count=item["closed_issues"],
         ))
     return milestones
+
+
+def fetch_prs(repo: str) -> list[PullRequest]:
+    """Fetch all PRs from a GitHub repo."""
+    result = subprocess.run(
+        ["gh", "pr", "list", "--repo", repo, "--state", "all", "--limit", "100",
+         "--json", "number,title,state,url,headRefName,additions,deletions,changedFiles,body"],
+        capture_output=True, text=True, check=True,
+    )
+    raw = json.loads(result.stdout)
+    prs = []
+    for item in raw:
+        # Extract "closes #N" references from PR body
+        body = item.get("body", "") or ""
+        closes: list[int] = []
+        for match in re.finditer(r"[Cc]loses?\s+#(\d+)", body):
+            closes.append(int(match.group(1)))
+
+        prs.append(PullRequest(
+            number=item["number"],
+            title=item["title"],
+            state=item["state"],
+            url=item["url"],
+            head_branch=item.get("headRefName", ""),
+            additions=item.get("additions", 0),
+            deletions=item.get("deletions", 0),
+            changed_files=item.get("changedFiles", 0),
+            closes_issues=closes,
+        ))
+    return prs
 
 
 def extract_dependencies(issues: list[Issue]) -> None:
@@ -129,34 +172,33 @@ def extract_dependencies(issues: list[Issue]) -> None:
 
 
 def build_markdown(repo: str, issues: list[Issue], milestones: list[Milestone],
+                   prs: list[PullRequest] | None = None,
                    filter_milestone: str | None = None) -> str:
     """Build a markmap-compatible Markdown string."""
     repo_name = repo.split("/")[-1]
+    repo_url = f"https://github.com/{repo}"
 
     # Group issues by milestone
     ms_map: dict[str, list[Issue]] = {}
     for issue in issues:
         ms_map.setdefault(issue.milestone, []).append(issue)
 
-    # Sort milestones
     ms_order = {"Alpha": 0, "Beta": 1, "Future": 2, "Unassigned": 99}
     sorted_milestones = sorted(ms_map.keys(), key=lambda m: ms_order.get(m, 50))
 
     if filter_milestone:
         sorted_milestones = [m for m in sorted_milestones if m == filter_milestone]
 
-    lines = [f"# {repo_name}"]
+    lines = [f"# [{repo_name}]({repo_url})"]
 
     for ms_name in sorted_milestones:
         ms_issues = ms_map[ms_name]
-        open_count = sum(1 for i in ms_issues if i.state == "OPEN")
         closed_count = sum(1 for i in ms_issues if i.state == "CLOSED")
         total = len(ms_issues)
 
         progress = f"({closed_count}/{total} done)" if total > 0 else ""
         lines.append(f"\n## {ms_name} {progress}")
 
-        # Group by label
         label_groups: dict[str, list[Issue]] = {}
         for issue in ms_issues:
             if issue.labels:
@@ -190,7 +232,36 @@ def build_markdown(repo: str, issues: list[Issue], milestones: list[Milestone],
                     blocks = ", ".join(f"#{b}" for b in issue.blocks)
                     block_text = f" → unblocks {blocks}"
                 suffix = dep_text + block_text
-                lines.append(f"- {icon} #{issue.number} {issue.title}{suffix}")
+                lines.append(f"- {icon} [#{issue.number} {issue.title}]({issue.url}){suffix}")
+
+    # PRs section
+    if prs:
+        open_prs = [p for p in prs if p.state == "OPEN"]
+        merged_prs = [p for p in prs if p.state == "MERGED"]
+
+        if open_prs or merged_prs:
+            lines.append(f"\n## Pull Requests")
+
+            if open_prs:
+                lines.append(f"\n### Open ({len(open_prs)})")
+                for pr in sorted(open_prs, key=lambda p: p.number):
+                    closes_text = ""
+                    if pr.closes_issues:
+                        closes_text = " → closes " + ", ".join(f"#{n}" for n in pr.closes_issues)
+                    lines.append(
+                        f"- 🟡 [PR #{pr.number} {pr.title}]({pr.url})"
+                        f" (+{pr.additions}/-{pr.deletions}){closes_text}"
+                    )
+
+            if merged_prs:
+                lines.append(f"\n### Merged ({len(merged_prs)})")
+                for pr in sorted(merged_prs, key=lambda p: p.number):
+                    closes_text = ""
+                    if pr.closes_issues:
+                        closes_text = " → closed " + ", ".join(f"#{n}" for n in pr.closes_issues)
+                    lines.append(
+                        f"- ✅ [PR #{pr.number} {pr.title}]({pr.url}){closes_text}"
+                    )
 
     return "\n".join(lines)
 
@@ -262,14 +333,15 @@ def generate(repo: str, milestone: str | None, output: Path, auto_refresh: int =
     print(f"Fetching issues from {repo}...")
     issues = fetch_issues(repo)
     milestones = fetch_milestones(repo)
-    print(f"  {len(issues)} issues, {len(milestones)} milestones")
+    prs = fetch_prs(repo)
+    print(f"  {len(issues)} issues, {len(milestones)} milestones, {len(prs)} PRs")
 
     print("  Extracting dependencies...")
     extract_dependencies(issues)
     dep_count = sum(len(i.depends_on) for i in issues)
     print(f"  {dep_count} dependency links found")
 
-    markdown = build_markdown(repo, issues, milestones, milestone)
+    markdown = build_markdown(repo, issues, milestones, prs, milestone)
     html = build_html(markdown, repo, auto_refresh)
     output.write_text(html, encoding="utf-8")
     print(f"Mind map written to: {output}")

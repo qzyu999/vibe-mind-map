@@ -328,7 +328,86 @@ def build_html(markdown: str, repo: str, auto_refresh: int = 0) -> str:
 </html>"""
 
 
-def generate(repo: str, milestone: str | None, output: Path, auto_refresh: int = 0) -> None:
+def resolve_references(custom_md: str, issues: list[Issue], prs: list[PullRequest],
+                       repo: str) -> str:
+    """Replace #N references in custom markdown with clickable links + status icons."""
+    repo_url = f"https://github.com/{repo}"
+    issue_map = {i.number: i for i in issues}
+    pr_map = {p.number: p for p in prs}
+
+    def replace_issue_ref(match):
+        num = int(match.group(1))
+        if num in issue_map:
+            i = issue_map[num]
+            icon = "✅" if i.state == "CLOSED" else "🔴"
+            return f"{icon} [#{num} {i.title}]({i.url})"
+        if num in pr_map:
+            p = pr_map[num]
+            icon = "✅" if p.state == "MERGED" else "🟡" if p.state == "OPEN" else "⚪"
+            return f"{icon} [PR #{num} {p.title}]({p.url})"
+        return f"[#{num}]({repo_url}/issues/{num})"
+
+    def replace_milestone_ref(match):
+        name = match.group(1)
+        return f"[milestone:{name}]({repo_url}/milestone)"
+
+    # Replace standalone #N (not inside URLs or already-linked text)
+    result = re.sub(r'(?<!\[)(?<!\()(?<!/)#(\d+)\b', replace_issue_ref, custom_md)
+    result = re.sub(r'milestone:(\w+)', replace_milestone_ref, result)
+    return result
+
+
+def build_combined_markdown(repo: str, custom_md: str | None,
+                            issues: list[Issue], milestones: list[Milestone],
+                            prs: list[PullRequest],
+                            filter_milestone: str | None = None) -> str:
+    """Build combined markdown: custom (left) + GitHub (right) under one root."""
+    repo_name = repo.split("/")[-1]
+    repo_url = f"https://github.com/{repo}"
+    github_md = build_markdown(repo, issues, milestones, prs, filter_milestone)
+
+    if not custom_md:
+        return github_md
+
+    # Resolve #N references in custom markdown
+    resolved_custom = resolve_references(custom_md, issues, prs, repo)
+
+    # The custom markdown should start with ## (not #) since we wrap it
+    # Strip any top-level # heading from custom — we'll merge under one root
+    custom_lines = resolved_custom.strip().split("\n")
+    if custom_lines and custom_lines[0].startswith("# "):
+        custom_title = custom_lines[0][2:].strip()
+        custom_body = "\n".join(custom_lines[1:])
+    else:
+        custom_title = "Vision"
+        custom_body = resolved_custom
+
+    # Strip the top-level heading from github_md too
+    github_lines = github_md.strip().split("\n")
+    if github_lines and github_lines[0].startswith("# "):
+        github_body = "\n".join(github_lines[1:])
+    else:
+        github_body = github_md
+
+    # Combine: root → left (custom) + right (github)
+    combined = f"# [{repo_name}]({repo_url})\n"
+    combined += f"\n## {custom_title}\n"
+    combined += custom_body + "\n"
+    combined += f"\n## GitHub Tracker\n"
+    # Demote github headings by one level (## → ###, ### → ####)
+    for line in github_body.split("\n"):
+        if line.startswith("## "):
+            combined += "\n###" + line[2:] + "\n"
+        elif line.startswith("### "):
+            combined += "\n####" + line[3:] + "\n"
+        else:
+            combined += line + "\n"
+
+    return combined
+
+
+def generate(repo: str, milestone: str | None, output: Path,
+             custom_path: Path | None = None, auto_refresh: int = 0) -> None:
     """Fetch data and generate the mind map HTML."""
     print(f"Fetching issues from {repo}...")
     issues = fetch_issues(repo)
@@ -341,13 +420,19 @@ def generate(repo: str, milestone: str | None, output: Path, auto_refresh: int =
     dep_count = sum(len(i.depends_on) for i in issues)
     print(f"  {dep_count} dependency links found")
 
-    markdown = build_markdown(repo, issues, milestones, prs, milestone)
+    custom_md = None
+    if custom_path and custom_path.exists():
+        custom_md = custom_path.read_text(encoding="utf-8")
+        print(f"  Custom map loaded: {custom_path}")
+
+    markdown = build_combined_markdown(repo, custom_md, issues, milestones, prs, milestone)
     html = build_html(markdown, repo, auto_refresh)
     output.write_text(html, encoding="utf-8")
     print(f"Mind map written to: {output}")
 
 
-def serve_mindmap(repo: str, milestone: str | None, port: int = 8080) -> None:
+def serve_mindmap(repo: str, milestone: str | None, custom_path: Path | None = None,
+                  port: int = 8080) -> None:
     """Run a local HTTP server that generates fresh mind maps on each request."""
     from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -361,9 +446,13 @@ def serve_mindmap(repo: str, milestone: str | None, port: int = 8080) -> None:
                 milestones_data = fetch_milestones(repo)
                 prs = fetch_prs(repo)
                 extract_dependencies(issues)
-                markdown = build_markdown(repo, issues, milestones_data, prs, milestone)
+
+                custom_md = None
+                if custom_path and custom_path.exists():
+                    custom_md = custom_path.read_text(encoding="utf-8")
+
+                markdown = build_combined_markdown(repo, custom_md, issues, milestones_data, prs, milestone)
                 html = build_html(markdown, repo)
-                # Add a refresh button to the served version
                 html = html.replace(
                     '<div class="controls">',
                     '<div class="controls">'
@@ -407,16 +496,19 @@ def main():
     parser.add_argument("--watch-interval", type=int, default=60, help="Watch interval in seconds")
     parser.add_argument("--serve", action="store_true", help="Run as local server (refresh = live data)")
     parser.add_argument("--port", type=int, default=8080, help="Port for --serve mode")
+    parser.add_argument("--custom", default=None, help="Custom markdown file for conceptual map (left side)")
     args = parser.parse_args()
 
+    custom_path = Path(args.custom) if args.custom else None
+
     if args.serve:
-        serve_mindmap(args.repo, args.milestone, args.port)
+        serve_mindmap(args.repo, args.milestone, custom_path, args.port)
         return
 
     output_path = Path(args.output) if args.output else Path("mindmap.html")
     refresh = args.watch_interval if args.watch else 0
 
-    generate(args.repo, args.milestone, output_path, auto_refresh=refresh)
+    generate(args.repo, args.milestone, output_path, custom_path, auto_refresh=refresh)
 
     if not args.no_open:
         webbrowser.open(str(output_path.resolve()))
@@ -426,7 +518,7 @@ def main():
         try:
             while True:
                 time.sleep(args.watch_interval)
-                generate(args.repo, args.milestone, output_path, auto_refresh=refresh)
+                generate(args.repo, args.milestone, output_path, custom_path, auto_refresh=refresh)
         except KeyboardInterrupt:
             print("\nStopped.")
 

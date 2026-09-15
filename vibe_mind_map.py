@@ -347,6 +347,56 @@ def generate(repo: str, milestone: str | None, output: Path, auto_refresh: int =
     print(f"Mind map written to: {output}")
 
 
+def serve_mindmap(repo: str, milestone: str | None, port: int = 8080) -> None:
+    """Run a local HTTP server that generates fresh mind maps on each request."""
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    class MindMapHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path not in ("/", "/index.html"):
+                self.send_error(404)
+                return
+            try:
+                issues = fetch_issues(repo)
+                milestones_data = fetch_milestones(repo)
+                prs = fetch_prs(repo)
+                extract_dependencies(issues)
+                markdown = build_markdown(repo, issues, milestones_data, prs, milestone)
+                html = build_html(markdown, repo)
+                # Add a refresh button to the served version
+                html = html.replace(
+                    '<div class="controls">',
+                    '<div class="controls">'
+                    '<button onclick="location.reload()" title="Refresh from GitHub">↻</button>'
+                )
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(html.encode("utf-8"))
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "text/plain")
+                self.end_headers()
+                self.wfile.write(f"Error: {e}".encode("utf-8"))
+
+        def log_message(self, format, *args):
+            print(f"  [{self.log_date_time_string()}] {format % args}")
+
+    server = HTTPServer(("127.0.0.1", port), MindMapHandler)
+    print(f"Serving mind map at http://localhost:{port}")
+    print(f"  Repo: {repo}")
+    if milestone:
+        print(f"  Milestone: {milestone}")
+    print(f"  Each page load fetches fresh data from GitHub.")
+    print(f"  Ctrl+C to stop.\n")
+    webbrowser.open(f"http://localhost:{port}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nStopped.")
+        server.server_close()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate mind map from GitHub project")
     parser.add_argument("--repo", required=True, help="GitHub repo (owner/name)")
@@ -355,7 +405,13 @@ def main():
     parser.add_argument("--no-open", action="store_true", help="Don't open in browser")
     parser.add_argument("--watch", action="store_true", help="Auto-refresh every 60 seconds")
     parser.add_argument("--watch-interval", type=int, default=60, help="Watch interval in seconds")
+    parser.add_argument("--serve", action="store_true", help="Run as local server (refresh = live data)")
+    parser.add_argument("--port", type=int, default=8080, help="Port for --serve mode")
     args = parser.parse_args()
+
+    if args.serve:
+        serve_mindmap(args.repo, args.milestone, args.port)
+        return
 
     output_path = Path(args.output) if args.output else Path("mindmap.html")
     refresh = args.watch_interval if args.watch else 0

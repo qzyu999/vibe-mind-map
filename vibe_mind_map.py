@@ -337,7 +337,7 @@ def build_html(markdown: str, repo: str, auto_refresh: int = 0,
     const leftRoot = transformer.transform(leftMd).root;
     const rightRoot = transformer.transform(rightMd).root;
 
-    const opts = {{ colorFreezeLevel: 2, maxWidth: 350, initialExpandLevel: 3, paddingX: 16 }};
+    const opts = {{ colorFreezeLevel: 2, maxWidth: 350, initialExpandLevel: 1, paddingX: 16 }};
     const mmLeft = Markmap.create('#map-left', opts, leftRoot);
     const mmRight = Markmap.create('#map-right', opts, rightRoot);
 
@@ -418,7 +418,7 @@ def build_html(markdown: str, repo: str, auto_refresh: int = 0,
     const mm = Markmap.create('#mindmap', {{
       colorFreezeLevel: 2,
       maxWidth: 400,
-      initialExpandLevel: 3,
+      initialExpandLevel: 1,
       paddingX: 20,
     }}, root);
   </script>

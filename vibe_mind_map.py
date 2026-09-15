@@ -281,16 +281,22 @@ def build_html(markdown: str, repo: str, auto_refresh: int = 0,
   <title>Mind Map — {repo}</title>
   <style>
     * {{ box-sizing: border-box; }}
-    body {{ margin: 0; padding: 0; background: #f5f5f5; display: flex; height: 100vh; }}
-    .pane {{ width: 50%; height: 100%; position: relative; }}
-    .pane-left {{ border-right: 2px solid #ddd; }}
+    body {{ margin: 0; padding: 0; background: #f5f5f5; display: flex; height: 100vh; overflow: hidden; }}
+    .pane {{ height: 100%; position: relative; overflow: hidden; }}
+    .pane-left {{ flex: 1 1 50%; }}
+    .pane-right {{ flex: 1 1 50%; }}
     .pane svg {{ width: 100%; height: 100%; }}
     .pane-label {{
       position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
       font-family: -apple-system, sans-serif; font-size: 13px; font-weight: 600;
       color: #555; background: #f5f5f5; padding: 2px 12px; border-radius: 4px;
-      border: 1px solid #ddd; z-index: 10;
+      border: 1px solid #ddd; z-index: 10; pointer-events: none;
     }}
+    .divider {{
+      width: 6px; cursor: col-resize; background: #ddd; flex-shrink: 0;
+      transition: background 0.15s;
+    }}
+    .divider:hover, .divider.active {{ background: #999; }}
     .markmap-node-text {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 13px; fill: #1a1a1a; }}
     .markmap-link {{ stroke: #888; }}
     .controls {{
@@ -308,11 +314,12 @@ def build_html(markdown: str, repo: str, auto_refresh: int = 0,
   <script src="https://cdn.jsdelivr.net/npm/markmap-lib@0.17"></script>
 </head>
 <body>
-  <div class="pane pane-left">
+  <div class="pane pane-left" id="pane-left">
     <div class="pane-label">Vision / Design</div>
     <svg id="map-left"></svg>
   </div>
-  <div class="pane pane-right">
+  <div class="divider" id="divider"></div>
+  <div class="pane pane-right" id="pane-right">
     <div class="pane-label">GitHub Tracker</div>
     <svg id="map-right"></svg>
   </div>
@@ -333,6 +340,38 @@ def build_html(markdown: str, repo: str, auto_refresh: int = 0,
     const opts = {{ colorFreezeLevel: 2, maxWidth: 350, initialExpandLevel: 3, paddingX: 16 }};
     const mmLeft = Markmap.create('#map-left', opts, leftRoot);
     const mmRight = Markmap.create('#map-right', opts, rightRoot);
+
+    // Draggable divider
+    const divider = document.getElementById('divider');
+    const left = document.getElementById('pane-left');
+    const right = document.getElementById('pane-right');
+    let dragging = false;
+
+    divider.addEventListener('mousedown', (e) => {{
+      dragging = true;
+      divider.classList.add('active');
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      e.preventDefault();
+    }});
+
+    document.addEventListener('mousemove', (e) => {{
+      if (!dragging) return;
+      const pct = (e.clientX / window.innerWidth) * 100;
+      const clamped = Math.max(20, Math.min(80, pct));
+      left.style.flex = '0 0 ' + clamped + '%';
+      right.style.flex = '0 0 ' + (100 - clamped) + '%';
+    }});
+
+    document.addEventListener('mouseup', () => {{
+      if (!dragging) return;
+      dragging = false;
+      divider.classList.remove('active');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      mmLeft.fit();
+      mmRight.fit();
+    }});
   </script>
 </body>
 </html>"""

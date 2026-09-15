@@ -266,11 +266,79 @@ def build_markdown(repo: str, issues: list[Issue], milestones: list[Milestone],
     return "\n".join(lines)
 
 
-def build_html(markdown: str, repo: str, auto_refresh: int = 0) -> str:
+def build_html(markdown: str, repo: str, auto_refresh: int = 0,
+               custom_markdown: str | None = None) -> str:
     """Wrap markdown in an HTML page with markmap rendering."""
     refresh_tag = f'<meta http-equiv="refresh" content="{auto_refresh}">' if auto_refresh > 0 else ""
 
-    return f"""<!DOCTYPE html>
+    if custom_markdown:
+        # Split-pane mode: two markmaps side by side
+        return f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  {refresh_tag}
+  <title>Mind Map — {repo}</title>
+  <style>
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; padding: 0; background: #f5f5f5; display: flex; height: 100vh; }}
+    .pane {{ width: 50%; height: 100%; position: relative; }}
+    .pane-left {{ border-right: 2px solid #ddd; }}
+    .pane svg {{ width: 100%; height: 100%; }}
+    .pane-label {{
+      position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+      font-family: -apple-system, sans-serif; font-size: 13px; font-weight: 600;
+      color: #555; background: #f5f5f5; padding: 2px 12px; border-radius: 4px;
+      border: 1px solid #ddd; z-index: 10;
+    }}
+    .markmap-node-text {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 13px; fill: #1a1a1a; }}
+    .markmap-link {{ stroke: #888; }}
+    .controls {{
+      position: fixed; bottom: 20px; right: 20px; z-index: 1000;
+      display: flex; gap: 8px;
+    }}
+    .controls button {{
+      width: 36px; height: 36px; border-radius: 8px; border: 1px solid #ccc;
+      background: white; font-size: 18px; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }}
+    .controls button:hover {{ background: #e8e8e8; }}
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <script src="https://cdn.jsdelivr.net/npm/markmap-view@0.17"></script>
+  <script src="https://cdn.jsdelivr.net/npm/markmap-lib@0.17"></script>
+</head>
+<body>
+  <div class="pane pane-left">
+    <div class="pane-label">Vision / Design</div>
+    <svg id="map-left"></svg>
+  </div>
+  <div class="pane pane-right">
+    <div class="pane-label">GitHub Tracker</div>
+    <svg id="map-right"></svg>
+  </div>
+  <div class="controls">
+    <button onclick="location.reload()" title="Refresh from GitHub">↻</button>
+    <button onclick="mmLeft.fit(); mmRight.fit();" title="Fit to screen">⊙</button>
+  </div>
+  <script>
+    const {{ Transformer, Markmap }} = window.markmap;
+    const transformer = new Transformer();
+
+    const leftMd = {json.dumps(custom_markdown)};
+    const rightMd = {json.dumps(markdown)};
+
+    const leftRoot = transformer.transform(leftMd).root;
+    const rightRoot = transformer.transform(rightMd).root;
+
+    const opts = {{ colorFreezeLevel: 2, maxWidth: 350, initialExpandLevel: 3, paddingX: 16 }};
+    const mmLeft = Markmap.create('#map-left', opts, leftRoot);
+    const mmRight = Markmap.create('#map-right', opts, rightRoot);
+  </script>
+</body>
+</html>"""
+    else:
+        # Single map mode (no custom markdown)
+        return f"""<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
@@ -290,10 +358,6 @@ def build_html(markdown: str, repo: str, auto_refresh: int = 0) -> str:
       background: white; font-size: 20px; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }}
     .controls button:hover {{ background: #e8e8e8; }}
-    .status {{
-      position: fixed; top: 10px; right: 20px; z-index: 1000;
-      font-family: -apple-system, sans-serif; font-size: 12px; color: #888;
-    }}
   </style>
   <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
   <script src="https://cdn.jsdelivr.net/npm/markmap-view@0.17"></script>
@@ -302,15 +366,14 @@ def build_html(markdown: str, repo: str, auto_refresh: int = 0) -> str:
 <body>
   <svg id="mindmap"></svg>
   <div class="controls">
-    <button onclick="zoomIn()" title="Zoom in">+</button>
-    <button onclick="zoomOut()" title="Zoom out">−</button>
-    <button onclick="resetZoom()" title="Fit to screen">⊙</button>
+    <button onclick="location.reload()" title="Refresh from GitHub">↻</button>
+    <button onclick="mm.rescale(1.3)" title="Zoom in">+</button>
+    <button onclick="mm.rescale(0.7)" title="Zoom out">−</button>
+    <button onclick="mm.fit()" title="Fit to screen">⊙</button>
   </div>
-  <div class="status">{"Auto-refresh: " + str(auto_refresh) + "s" if auto_refresh > 0 else ""}</div>
   <script>
     const md = {json.dumps(markdown)};
-    const {{ Transformer }} = window.markmap;
-    const {{ Markmap }} = window.markmap;
+    const {{ Transformer, Markmap }} = window.markmap;
     const transformer = new Transformer();
     const {{ root }} = transformer.transform(md);
     const mm = Markmap.create('#mindmap', {{
@@ -319,10 +382,6 @@ def build_html(markdown: str, repo: str, auto_refresh: int = 0) -> str:
       initialExpandLevel: 3,
       paddingX: 20,
     }}, root);
-
-    function zoomIn() {{ mm.rescale(1.3); }}
-    function zoomOut() {{ mm.rescale(0.7); }}
-    function resetZoom() {{ mm.fit(); }}
   </script>
 </body>
 </html>"""
@@ -423,10 +482,11 @@ def generate(repo: str, milestone: str | None, output: Path,
     custom_md = None
     if custom_path and custom_path.exists():
         custom_md = custom_path.read_text(encoding="utf-8")
+        custom_md = resolve_references(custom_md, issues, prs, repo)
         print(f"  Custom map loaded: {custom_path}")
 
-    markdown = build_combined_markdown(repo, custom_md, issues, milestones, prs, milestone)
-    html = build_html(markdown, repo, auto_refresh)
+    github_md = build_markdown(repo, issues, milestones, prs, milestone)
+    html = build_html(github_md, repo, auto_refresh, custom_markdown=custom_md)
     output.write_text(html, encoding="utf-8")
     print(f"Mind map written to: {output}")
 
@@ -450,14 +510,10 @@ def serve_mindmap(repo: str, milestone: str | None, custom_path: Path | None = N
                 custom_md = None
                 if custom_path and custom_path.exists():
                     custom_md = custom_path.read_text(encoding="utf-8")
+                    custom_md = resolve_references(custom_md, issues, prs, repo)
 
-                markdown = build_combined_markdown(repo, custom_md, issues, milestones_data, prs, milestone)
-                html = build_html(markdown, repo)
-                html = html.replace(
-                    '<div class="controls">',
-                    '<div class="controls">'
-                    '<button onclick="location.reload()" title="Refresh from GitHub">↻</button>'
-                )
+                github_md = build_markdown(repo, issues, milestones_data, prs, milestone)
+                html = build_html(github_md, repo, custom_markdown=custom_md)
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.end_headers()
